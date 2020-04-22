@@ -26,7 +26,8 @@ Follow [this tutorial](https://elder.dev/posts/open-source-virtual-background/
 `python caman.py`
 
 # Features
-- Boomerang
+- Boomerang  
+  Stop webcam and fake presence by playing the last 2 seconds back and forth.
 - Virtual Background
 - Desktop Share
 - Filters
