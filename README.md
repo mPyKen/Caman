@@ -24,3 +24,14 @@ Follow [this tutorial](https://elder.dev/posts/open-source-virtual-background/
 `LD_LIBRARY_PATH=/opt/cuda/lib:$LD_LIBRARY_PATH TF_FORCE_GPU_ALLOW_GROWTH=true node app.js`
 4. Start Caman  
 `python caman.py`
+
+# Features
+- Boomerang
+- Virtual Background
+- Desktop Share
+- Filters
+  - Smoothing
+  - Hologram effect
+  - Invert
+- Fun
+  - Duplicate camera
