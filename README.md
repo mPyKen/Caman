@@ -1,7 +1,7 @@
 # Caman
 
 ## Description
-Caman creates a fake virtual webcam for applications such as zoom or skype to have fun / show presence.
+Caman creates a fake virtual webcam for applications such as zoom or skype to have fun / ~fake~ show presence.
 
 # Requirements
 ## [BodyPix](https://blog.tensorflow.org/2019/11/updated-bodypix-2.html)
