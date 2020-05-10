@@ -7,8 +7,10 @@ import numpy as np
 import requests
 import pyfakewebcam
 import mss
+from VideoGet import VideoGet
 
-def get_mask(frame, bodypix_url='http://localhost:9000'):
+def get_mask(frame, bodypix_url='http://localhost:9000', scale=0.25):
+    frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
     _, data = cv2.imencode(".jpg", frame)
     r = requests.post(
         url=bodypix_url,
@@ -16,6 +18,7 @@ def get_mask(frame, bodypix_url='http://localhost:9000'):
         headers={'Content-Type': 'application/octet-stream'})
     mask = np.frombuffer(r.content, dtype=np.uint8)
     mask = mask.reshape((frame.shape[0], frame.shape[1]))
+    mask = cv2.resize(mask, (0, 0), fx=1 / scale, fy=1 / scale, interpolation=cv2.INTER_LINEAR)
     return mask
 
 def shift_image(img, dx, dy):
@@ -48,11 +51,8 @@ def hologram_effect(img):
 
 def run():
     # setup access to the *real* webcam
-    cap = cv2.VideoCapture('/dev/video0')
     height, width = 720, 1280
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-    cap.set(cv2.CAP_PROP_FPS, 60)
+    video_getter = VideoGet('/dev/video0', width, height, 60).start()
 
     # setup the fake camera
     fake = pyfakewebcam.FakeWebcam('/dev/video20', width, height)
@@ -98,13 +98,16 @@ def run():
     frames = collections.deque([])
     boomeranglen = 2
 
+    dilateit = 2
     t = 0
     while True:
         lastt = t
         t = time.time()
 
         if not pause:
-            _, frame = cap.read()
+            if video_getter.stopped:
+                break
+            frame = video_getter.frame['raw'].copy()
         else:
             frame = boomerang[len(boomerang)-1-boomerangidx]['frame'].copy()
             if boomerangidx == 0 or boomerangidx == len(boomerang) - 1:
@@ -127,7 +130,7 @@ def run():
 
         # duplicating option
         if duplicate:
-            sub = frame[:, int(frame.shape[1]*1/4):int(frame.shape[1]*3/4)]
+            sub = frame[:, int(frame.shape[1]*1/4):int(frame.shape[1]*3/4), :]
             frame = cv2.hconcat([sub, sub])
 
         # get user mask
@@ -145,7 +148,7 @@ def run():
             mask = cv2.dilate(mask, np.ones((10,10), np.uint8) , iterations=4)
         else:
             mask = cv2.erode(mask, np.ones((10,10), np.uint8) , iterations=1)
-            mask = cv2.dilate(mask, np.ones((10,10), np.uint8) , iterations=1)
+            mask = cv2.dilate(mask, np.ones((10,10), np.uint8) , iterations=dilateit)
         mask = cv2.blur(mask.astype(float), (30,30))
 
         # invert option
@@ -198,6 +201,10 @@ def run():
             desktop = not desktop
         elif key == -1:
             pass
+        elif key == ord('+'):
+            dilateit += 1
+        elif key == ord('-'):
+            dilateit = max(1, dilateit-1)
         else:
             print(key)
 
@@ -208,8 +215,9 @@ def run():
             sleep = future - time.time()
             if sleep > 0:
                 time.sleep(sleep)
-        print(time.time() - t)
+        print(1 / (time.time() - t))
 
+    video_getter.stop()
     cv2.destroyAllWindows()
 
 if __name__ == '__main__':
