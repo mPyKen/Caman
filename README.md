@@ -13,6 +13,15 @@ Follow [this tutorial](https://elder.dev/posts/open-source-virtual-background/
 
 ## Linux
 
+1. Stop any instance of v4l2loopback  
+`sudo modprobe -r v4l2loopback`
+2. Start v4l2loopback for fake webcam  
+`sudo modprobe v4l2loopback devices=1 video_nr=20 card_label="v4l2loopback" exclusive_caps=1`
+3. Start BodyPix node server  
+`node app.js`
+4. Start Caman  
+`python caman.py`
+
 ### With primusrun
 0. Force enabling discrete graphics card with  
 `sudo tee /proc/acpi/bbswitch <<< ON`
@@ -26,13 +35,15 @@ Follow [this tutorial](https://elder.dev/posts/open-source-virtual-background/
 `python caman.py`
 
 # Features
+- All elements designed as layers
+  - Can be resized and moved around
+  - Each layer running on a separate thread
 - Boomerang  
   Stop webcam and fake presence by playing the last 2 seconds back and forth.
 - Virtual Background
-- Desktop Share
+- Desktop Share with mouse pointer
 - Filters
   - Smoothing
   - Hologram effect
   - Invert
-- Fun
-  - Duplicate camera
+- And many other features

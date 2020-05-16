@@ -1,225 +1,291 @@
 #!python3
-import os
+import sys
 import time
-import collections
-import cv2
+import threading
+import logging
+import traceback
+from collections import defaultdict
 import numpy as np
-import requests
-import pyfakewebcam
-import mss
-from VideoGet import VideoGet
+import cv2
 
-def get_mask(frame, bodypix_url='http://localhost:9000', scale=0.25):
-    frame = cv2.resize(frame, (0, 0), fx=scale, fy=scale)
-    _, data = cv2.imencode(".jpg", frame)
-    r = requests.post(
-        url=bodypix_url,
-        data=data.tobytes(),
-        headers={'Content-Type': 'application/octet-stream'})
-    mask = np.frombuffer(r.content, dtype=np.uint8)
-    mask = mask.reshape((frame.shape[0], frame.shape[1]))
-    mask = cv2.resize(mask, (0, 0), fx=1 / scale, fy=1 / scale, interpolation=cv2.INTER_LINEAR)
-    return mask
+from src.Layer import *
+from src.Provider import *
+from src.pyfakewebcam import *
 
-def shift_image(img, dx, dy):
-    img = np.roll(img, dy, axis=0)
-    img = np.roll(img, dx, axis=1)
-    if dy>0:
-        img[:dy, :] = 0
-    elif dy<0:
-        img[dy:, :] = 0
-    if dx>0:
-        img[:, :dx] = 0
-    elif dx<0:
-        img[:, dx:] = 0
-    return img
+import importlib
+import config
 
-def hologram_effect(img):
-    # add a blue tint
-    holo = cv2.applyColorMap(img, cv2.COLORMAP_WINTER)
-    # add a halftone effect
-    bandLength, bandGap = 2, 3
-    for y in range(holo.shape[0]):
-        if y % (bandLength+bandGap) < bandLength:
-            holo[y,:,:] = holo[y,:,:] * np.random.uniform(0.1, 0.3)
-    # add some ghosting
-    holo_blur = cv2.addWeighted(holo, 0.2, shift_image(holo.copy(), 5, 5), 0.8, 0)
-    holo_blur = cv2.addWeighted(holo_blur, 0.4, shift_image(holo.copy(), -5, -5), 0.6, 0)
-    # combine with the original color, oversaturated
-    out = cv2.addWeighted(img, 0.5, holo_blur, 0.6, 0)
-    return out
+class Caman():
 
-def run():
-    # setup access to the *real* webcam
-    height, width = 720, 1280
-    video_getter = VideoGet('/dev/video0', width, height, 60).start()
+    def __init__(self, **kwargs):
+        self.layers = []
+        self.keystatus = defaultdict(int)
+        self.width = kwargs['dimension'][0]
+        self.height = kwargs['dimension'][1]
+        self.mousemode = ["", "", ""]
+        self.mousepos = (0, 0)
 
-    # setup the fake camera
-    fake = pyfakewebcam.FakeWebcam('/dev/video20', width, height)
+    def reloadConfig(self):
+        try:
+            importlib.reload(config)
+            bg, newlayers = config.loadConfig(self.width, self.height)
+            if newlayers is not None and bg is not None:
+                self.shutdownLayers()
+                self.background = cv2.resize(bg, (self.width, self.height))
+                self.layers = newlayers
+                self.updateLayerOrder()
+                self.startLayers()
+        except Exception:
+            print(traceback.format_exc())
 
-    # load the virtual background
-    background_static = cv2.imread("background.jpg")
-    if background_static is None:
-        background_static = np.zeros((height,width,3), np.uint8)
-        background_static[:, :, :] = (255, 255, 200)
+    def updateLayerOrder(self):
+        self.layers.sort(key=lambda layer: layer.level)
 
-    # load screen capture
-    sct = mss.mss()
-    monitor = {"top": 0, "left": 0, "width": 1920, "height": 1080}
+    def renderLayers(self):
+        # render all layers
+        render = self.background.copy()
+        for layer in self.layers:
+            # skip if layer is disabled or if frame is empty
+            if layer.level < 0:
+                continue
+            frame = layer.getFrame()
+            if frame is None:
+                continue
 
-    # initial config
-    pause = False
-    gaussian = True
-    duplicate = False
-    people = True
-    invert = False
-    hologram = False
-    desktop = False
+            # get bounding box of layer
+            area = [layer.posy, layer.posx, layer.posy + layer.height, layer.posx + layer.width]
+            crop = [0, 0, frame.shape[0], frame.shape[1]]
+            # calculate the part that has to be drawn if it exceeds any border
+            for i in (0, 1):
+                if area[i] < 0:
+                    crop[i] = -area[i]
+                    area[i] = 0
+            for i in (2, 3):
+                if area[i] > self.background.shape[i-2]:
+                    crop[i] -= area[i] - self.background.shape[i-2]
+                    area[i] = self.background.shape[i-2]
+            
+            #if area[0] > self.height or area[1] > self.width or area[2] <= 0 or area[3] <= 0:
+            if crop[2] - crop[0] <= 0 or crop[3] - crop[1] < 0:
+                layer.level = -layer.level
+                continue
 
-    # hologram
-    #pause = False
-    #gaussian = True
-    #duplicate = False
-    #people = True
-    #invert = False
-    #hologram = True
-    #desktop = False
+            # composite layer with alpha blending
+            mask = layer.getMask()
+            try:
+                # put this into a try-except block. reason: resizing with mouse can cause conflict between updated layer.width and current layer.width
+                if mask is None:
+                    render[area[0]:area[2], area[1]:area[3], :] = frame[crop[0]:crop[2],crop[1]:crop[3],:]
+                else:
+                    for c in range(frame.shape[2]):
+                        render[area[0]:area[2], area[1]:area[3],c] \
+                            = frame[crop[0]:crop[2],crop[1]:crop[3],c] * mask[0][crop[0]:crop[2],crop[1]:crop[3]] \
+                            + render[area[0]:area[2], area[1]:area[3],c] * mask[1][crop[0]:crop[2],crop[1]:crop[3]]
+            except:
+                print(traceback.format_exc())
+        return render
 
-    # desktop share
-    #pause = False
-    #gaussian = False
-    #duplicate = False
-    #people = True
-    #invert = False
-    #hologram = False
-    #desktop = True
-
-    cv2.imshow("preview", background_static)
-    frames = collections.deque([])
-    boomeranglen = 2
-
-    dilateit = 2
-    t = 0
-    while True:
-        lastt = t
-        t = time.time()
-
-        if not pause:
-            if video_getter.stopped:
-                break
-            frame = video_getter.frame['raw'].copy()
-        else:
-            frame = boomerang[len(boomerang)-1-boomerangidx]['frame'].copy()
-            if boomerangidx == 0 or boomerangidx == len(boomerang) - 1:
-                boomerangidx, boomeranglastidx = boomeranglastidx, boomerangidx
-            else:
-                tmp = boomerangidx
-                boomerangidx += 1 if boomerangidx >= boomeranglastidx else -1
-                boomeranglastidx = tmp
-
-        # save recent frames for use in boomerang
-        frames.append({'frame': frame.copy(), 'time': t})
-        while frames[0]['time'] + boomeranglen < t:
-            frames.popleft()
-
-        # smoothing option
-        if gaussian:
-            #frame = cv2.GaussianBlur(frame, (5,5), 0)
-            frame = cv2.bilateralFilter(frame,9,75,75)
-            #frame = cv2.bilateralFilter(frame,9,125,125)
-
-        # duplicating option
-        if duplicate:
-            sub = frame[:, int(frame.shape[1]*1/4):int(frame.shape[1]*3/4), :]
-            frame = cv2.hconcat([sub, sub])
-
-        # get user mask
-        mask = None
-        if people:
-            while mask is None:
-                try:
-                    mask = get_mask(frame)
-                except:
-                    print("mask request failed, retrying")
-        else:
-            mask = np.ones((frame.shape[0], frame.shape[1]), np.uint8)
-        # post process mask
-        if hologram:
-            mask = cv2.dilate(mask, np.ones((10,10), np.uint8) , iterations=4)
-        else:
-            mask = cv2.erode(mask, np.ones((10,10), np.uint8) , iterations=1)
-            mask = cv2.dilate(mask, np.ones((10,10), np.uint8) , iterations=dilateit)
-        mask = cv2.blur(mask.astype(float), (30,30))
-
-        # invert option
-        if invert:
-            frame = cv2.bitwise_not(frame)
-
-        # hologram option
-        if hologram:
-            frame = hologram_effect(frame)
-        
-        # desktop option, default to background image
-        if desktop:
-            background = np.array(sct.grab(monitor))
-            x,y,w,h = cv2.getWindowImageRect("preview")
-            if w > 0:
-                cv2.rectangle(background, (x,y), (x+w,y+h), (70, 70, 70), -1)
-        else:
-            background = background_static
-        background_scaled = cv2.resize(background, (width, height))
-        # composite the foreground and background
-        inv_mask = 1-mask
-        for c in range(frame.shape[2]):
-            frame[:,:,c] = frame[:,:,c]*mask + background_scaled[:,:,c]*inv_mask
-
-        cv2.imshow("preview", frame)
-        frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        fake.schedule_frame(frame)
+    def handleInput(self):
+        # receive keyboard input
         key = cv2.waitKey(1)
+        self.keystatus[key] += 1
         if key == 27:
-            break;
-        elif key == ord(' '):
-            pause = not pause
-            if pause:
-                boomerangidx = 1
-                boomeranglastidx = 0
-                boomerang = frames.copy()
-            else:
-                del boomerang
-        elif key == ord('g'):
-            gaussian = not gaussian
-        elif key == ord('d'):
-            duplicate = not duplicate
-        elif key == ord('p'):
-            people = not people
-        elif key == ord('i'):
-            invert = not invert
-        elif key == ord('h'):
-            hologram = not hologram
-        elif key == 13: # Enter
-            desktop = not desktop
+            return False
+        elif key == ord('r'):
+            self.reloadConfig()
         elif key == -1:
             pass
-        elif key == ord('+'):
-            dilateit += 1
-        elif key == ord('-'):
-            dilateit = max(1, dilateit-1)
         else:
             print(key)
+            for layer in reversed(self.layers):
+                if layer.command(keypress=key):
+                    break
+        return True
 
-        # pause after frame to adapt to original capture for boomerang
-        if pause:
-            # sleep until t + delta
-            future = t + abs(boomerang[boomerangidx]['time'] - boomerang[boomeranglastidx]['time'])
-            sleep = future - time.time()
-            if sleep > 0:
-                time.sleep(sleep)
-        print(1 / (time.time() - t))
+    def findLayerAt(self, x, y):
+        for layer in reversed(self.layers):
+            if layer.level >= 0:
+                if layer.posx <= x and layer.posy <= y and x <= layer.posx + layer.width and y <= layer.posy + layer.height:
+                    return layer
+        return None
 
-    video_getter.stop()
-    cv2.destroyAllWindows()
+    def closestPointLine(self, p1, p2, p3):
+        # finds closest point between line (through p1 and p2) and p3
+        d1 = (p2[1] - p1[1]) / (p2[0] - p1[0])
+        z1 = p2[1] - d1*p2[0] # mx+y -> d1*x+z1
+        d2 = -1/d1
+        z2 = p3[1] - d2*p3[0] # mx+y -> d2*x+z2
+        x = (z2-z1) / (d1 - d2)
+        y = d1*x + z1
+        return (int(x), int(y))
+
+    def mouse(self, event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self.mousemode[0] = "down"
+            self.grabbedlayer = self.findLayerAt(x, y)
+            self.grabbedlayerpos = (self.grabbedlayer.posx, self.grabbedlayer.posy)
+            self.grabbedlayerdim = (self.grabbedlayer.width, self.grabbedlayer.height)
+            self.grabbedmousepos = (x, y)
+            dx = (x - self.grabbedlayerpos[0]) / self.grabbedlayerdim[0]
+            dy = (y - self.grabbedlayerpos[1]) / self.grabbedlayerdim[1]
+            dx = int(dx*3)
+            dy = int(dy*3)
+            # create following grid. 0,2,6,8 scales according to aspect ratio, 1,3,5,7 scales one axis only. 4 moves object.
+            # 0 1 2
+            # 3 4 5
+            # 6 7 8
+            self.grabbedeffect = 3*dy + dx
+        elif event == cv2.EVENT_MBUTTONDOWN:
+            self.mousemode[1] = "down"
+        elif event == cv2.EVENT_RBUTTONDOWN:
+            self.mousemode[2] = "down"
+        elif event == cv2.EVENT_LBUTTONUP:
+            self.mousemode[0] = "up"
+            self.grabbedlayer = None
+        elif event == cv2.EVENT_MBUTTONUP:
+            self.mousemode[1] = "up"
+            layer = self.findLayerAt(x, y)
+            layer.level = -layer.level
+        elif event == cv2.EVENT_RBUTTONUP:
+            self.mousemode[2] = "up"
+        elif event == cv2.EVENT_MOUSEMOVE:
+            self.mousepos = (x, y)
+            if self.mousemode[0] == "down" and self.grabbedlayer is not None:
+                if isinstance(self.grabbedlayer, AnimatedLayer):
+                    self.grabbedlayer.pause()
+                dx = x - self.grabbedmousepos[0]
+                dy = y - self.grabbedmousepos[1]
+                tl = (self.grabbedlayerpos[0], self.grabbedlayerpos[1])
+                br = (self.grabbedlayerpos[0] + self.grabbedlayerdim[0], self.grabbedlayerpos[1] + self.grabbedlayerdim[1])
+
+                if self.grabbedeffect == 0:
+                    x1, y1 = self.closestPointLine(br, tl, (x,y))
+                    x2, y2 = self.closestPointLine(br, tl, self.grabbedmousepos)
+                    dx, dy = x1 - x2, y1 - y2
+                    tl = (tl[0] + dx, tl[1] + dy)
+                elif self.grabbedeffect == 2:
+                    x1, y1 = self.closestPointLine((br[0], tl[1]), (tl[0], br[1]), (x,y))
+                    x2, y2 = self.closestPointLine((br[0], tl[1]), (tl[0], br[1]), self.grabbedmousepos)
+                    dx, dy = x1 - x2, y1 - y2
+                    tl = (tl[0], tl[1] + dy)
+                    br = (br[0] + dx, br[1])
+                elif self.grabbedeffect == 6:
+                    x1, y1 = self.closestPointLine((br[0], tl[1]), (tl[0], br[1]), (x,y))
+                    x2, y2 = self.closestPointLine((br[0], tl[1]), (tl[0], br[1]), self.grabbedmousepos)
+                    dx, dy = x1 - x2, y1 - y2
+                    tl = (tl[0] + dx, tl[1])
+                    br = (br[0], br[1] + dy)
+                elif self.grabbedeffect == 8:
+                    x1, y1 = self.closestPointLine(br, tl, (x,y))
+                    x2, y2 = self.closestPointLine(br, tl, self.grabbedmousepos)
+                    dx, dy = x1 - x2, y1 - y2
+                    br = (br[0] + dx, br[1] + dy)
+                elif self.grabbedeffect == 1:
+                    tl = (tl[0], tl[1] + dy)
+                elif self.grabbedeffect == 3:
+                    tl = (tl[0] + dx, tl[1])
+                elif self.grabbedeffect == 5:
+                    br = (br[0] + dx, br[1])
+                elif self.grabbedeffect == 7:
+                    br = (br[0], br[1] + dy)
+                elif self.grabbedeffect == 4:
+                    tl = (tl[0] + dx, tl[1] + dy)
+                    br = (br[0] + dx, br[1] + dy)
+                if br[0] - tl[0] <= 0 or br[1] - tl[1] <= 0:
+                    self.grabbedlayer.level = -self.grabbedlayer.level
+                    self.grabbedlayer = None
+                else:
+                    self.grabbedlayer.posx = tl[0]
+                    self.grabbedlayer.posy = tl[1]
+                    self.grabbedlayer.width = br[0] - tl[0]
+                    self.grabbedlayer.height = br[1] - tl[1]
+                    self.grabbedlayer.updateDimension()
+                if isinstance(self.grabbedlayer, AnimatedLayer):
+                    self.grabbedlayer.resume()
+
+    def renderAdditionalInfo(self, render, fps):
+        cv2.putText(render, "FPS: {}".format(format(fps, '.2f')), (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0))
+        # show bounding box and a grid for the hovered layer
+        if self.keystatus[ord('i')] %2 == 1:
+            hoveredlayer = self.findLayerAt(*self.mousepos)
+            if hoveredlayer is not None:
+                cv2.line(render, (hoveredlayer.posx+hoveredlayer.width//3,  hoveredlayer.posy), (hoveredlayer.posx+hoveredlayer.width//3,  hoveredlayer.posy+hoveredlayer.height), (255, 0, 0, 1))
+                cv2.line(render, (hoveredlayer.posx+hoveredlayer.width*2//3,hoveredlayer.posy), (hoveredlayer.posx+hoveredlayer.width*2//3,hoveredlayer.posy+hoveredlayer.height), (255, 0, 0, 1))
+                cv2.line(render, (hoveredlayer.posx,hoveredlayer.posy+hoveredlayer.height//3),   (hoveredlayer.posx+hoveredlayer.width,hoveredlayer.posy+hoveredlayer.height//3),   (255, 0, 0, 1))
+                cv2.line(render, (hoveredlayer.posx,hoveredlayer.posy+hoveredlayer.height*2//3), (hoveredlayer.posx+hoveredlayer.width,hoveredlayer.posy+hoveredlayer.height*2//3), (255, 0, 0, 1))
+                cv2.rectangle(render, (hoveredlayer.posx,hoveredlayer.posy), (hoveredlayer.posx+hoveredlayer.width,hoveredlayer.posy+hoveredlayer.height),(0,255,0), 1)
+        return render
+
+    def run(self, **kwargs):
+        logging.info("Create camera with dimensions of {}x{}".format(self.width, self.height))
+
+        # setup the fake camera
+        self.fake = pyfakewebcam.FakeWebcam('/dev/video20', self.width, self.height, \
+            input_pixfmt='BGR', output_pixfmt=v4l2.V4L2_PIX_FMT_YUYV)
+
+        # create named window
+        cv2.namedWindow("Caman")
+
+        # initiate all layers
+        self.reloadConfig()
+
+        #def chCamLevel(v):
+        #    for layer in self.layers:
+        #        if isinstance(layer, AnimatedLayer) and isinstance(layer.provider, CameraProvider):
+        #            layer.level = v
+        #            self.updateLayerOrder(layers)
+        #            return
+        #for hoveredlayer in self.layers:
+        #    if isinstance(hoveredlayer, AnimatedLayer) and isinstance(hoveredlayer.provider, CameraProvider):
+        #        cv2.createTrackbar("level", "Caman", hoveredlayer.level, 5, lambda v: chCamLevel(v))
+        #        break
+        cv2.setMouseCallback('Caman', self.mouse)
+
+        loop = True
+        fps = 0.0
+        while loop:
+            t = time.time()
+            render = self.renderLayers()
+            # pass to fake
+            #render = cv2.cvtColor(render, cv2.COLOR_BGR2RGB)
+            self.fake.schedule_frame(render)
+            # show info image
+            render = self.renderAdditionalInfo(render, fps)
+            cv2.imshow("Caman", render)
+            loop = self.handleInput()
+            # print current fps
+            fps = 1 / (time.time() - t);
+            #logging.info(fps)
+
+        self.shutdownLayers()
+        
+        # finalize
+        cv2.destroyAllWindows()
+        logging.info('Done')
+        sys.exit(0)
+
+    def startLayers(self):
+        for layer in self.layers:
+            if isinstance(layer, AnimatedLayer):
+                layer.start()
+
+    def shutdownLayers(self):
+        # stop all animated layers
+        for layer in self.layers:
+            if isinstance(layer, AnimatedLayer):
+                layer.stop()
+        logging.debug('Waiting for worker threads')
+        main_thread = threading.currentThread()
+        for t in threading.enumerate():
+            if t is not main_thread:
+                t.join()
 
 if __name__ == '__main__':
-    run()
+    logging.basicConfig(level=logging.DEBUG, format='(%(threadName)-9s) %(message)s',)
+    caman = Caman(dimension = (1280, 720))
+    try:
+        caman.run()
+    except:
+        caman.shutdownLayers()
+        raise
 
