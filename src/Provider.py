@@ -1,4 +1,5 @@
 import abc
+from enum import Enum
 import threading
 import time
 import logging
@@ -169,9 +170,15 @@ class Looper(Provider):
 
 class Boomerang(Provider):
 
+    class Status(Enum):
+        ACTIVE = 1
+        INACTIVE = 2
+        TRANSITION = 3
+
     def __init__(self, duration, key, provider, **kwargs):
         self.frames = collections.deque([])
-        self.active = False
+        self.status = Boomerang.Status.INACTIVE
+        kwargs.setdefault('fakelagduration', 1.0)
         kwargs['duration'] = duration
         kwargs['key'] = key
         kwargs['provider'] = provider
@@ -183,6 +190,8 @@ class Boomerang(Provider):
             self.duration = kwargs.pop('duration', 2)
         if 'key' in kwargs:
             self.key = kwargs.pop('key', ord(' '))
+        if 'fakelagduration' in kwargs:
+            self.fakelagduration = kwargs.pop('fakelagduration', 0)
         self.provider.setParams(kwargs)
 
     def stop(self):
@@ -199,7 +208,7 @@ class Boomerang(Provider):
         while self.frames[0]['time'] + self.duration < t:
             self.frames.popleft()
 
-        if self.active:
+        if self.status == Boomerang.Status.ACTIVE:
             frame = self.boomerang[len(self.boomerang)-1-self.boomerangidx]['frame']
             mask = self.boomerang[len(self.boomerang)-1-self.boomerangidx]['mask']
             if self.boomerangidx == 0 or self.boomerangidx == len(self.boomerang) - 1:
@@ -215,18 +224,27 @@ class Boomerang(Provider):
             if sleep > 0:
                 time.sleep(sleep)
             ret = True
+        elif self.status == Boomerang.Status.TRANSITION:
+            if t < self.triggertime + self.fakelagduration:
+                frame = self.boomerang[len(self.boomerang)-1-self.boomerangidx]['frame']
+                mask = self.boomerang[len(self.boomerang)-1-self.boomerangidx]['mask']
+            else:
+                self.status = Boomerang.Status.INACTIVE
         self.t = t
         return (ret, frame, mask)
 
     def command(self, **kwargs):
         if kwargs.get('keypress', -1) == self.key:
             kwargs.pop('keypress', None)
-            self.active = not self.active
-            logging.info("Set boomerang to:", self.active)
-            if self.active:
+            if self.status == Boomerang.Status.INACTIVE or self.status == Boomerang.Status.TRANSITION:
+                self.status = Boomerang.Status.ACTIVE
                 self.boomerangidx = 1
                 self.boomeranglastidx = 0
                 self.boomerang = self.frames.copy()
+            elif self.status == Boomerang.Status.ACTIVE:
+                self.status = Boomerang.Status.TRANSITION
+            self.triggertime = time.time()
+            logging.info("Set boomerang to: {}".format(self.status))
             return True
         return super().command(**kwargs)
 
