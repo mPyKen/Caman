@@ -47,6 +47,205 @@ class Provider(object):
         return (False, None, None)
 
 
+class ImageProvider(Provider):
+
+    def __init__(self, path, **kwargs):
+        self.frame = None
+        self.mask = None
+        kwargs['path'] = path
+        super().__init__(**kwargs)
+
+    def setParams(self, kwargs):
+        super().setParams(kwargs)
+        if 'path' in kwargs:
+            self.path = kwargs['path']
+
+    def stop(self):
+        pass
+
+    def reset(self):
+        self.stop()
+        self.frame = cv2.imread(self.path, cv2.IMREAD_UNCHANGED)
+        if self.frame.shape[2] == 4:
+            self.mask = self.frame[:, :, 3]
+            self.frame = self.frame[:, :, :3]
+
+    def next(self):
+        frame, mask = self.frame, self.mask
+        if self.width <= 0 and self.height <= 0:
+            pass
+        else:
+            if self.width > 0 and self.height > 0:
+                pass
+            elif self.width > 0:
+                self.height = self.width * frame.shape[0] // frame.shape[1]
+            elif self.height > 0:
+                self.width = self.height * frame.shape[1] // frame.shape[0]
+            frame = cv2.resize(frame, (self.width, self.height))
+            if mask is not None:
+                mask = cv2.resize(mask, (self.width, self.height))
+        return (True, frame, mask)
+
+
+class GIFProvider(Provider):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.cap = None
+        self.time = 0
+        if 'path' in kwargs:
+            self.path = kwargs['path']
+
+    def loadVideo(self, path):
+        self.path = path
+        self.reset()
+
+    def stop(self):
+        pass
+
+    def reset(self):
+        self.stop()
+        self.cap = Image.open(self.path)
+        logging.debug("reload {}".format(self.path))
+        if self.width <= 0 and self.width <= 0:
+            self.width, self.height = self.cap.size
+        else:
+            if self.width > 0 and self.height > 0:
+                pass
+            elif self.width > 0:
+                self.height = self.width * self.cap.size[1] // self.cap.size[0]
+            elif self.height > 0:
+                self.width = self.height * self.cap.size[0] // self.cap.size[1]
+
+    def next(self):
+        try:
+            self.cap.seek(self.cap.tell()+1)
+            #frame = self.cap.convert('RGB')
+            frame = np.array(self.cap.convert('RGBA'), dtype=np.uint8)
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGRA)
+            if self.width <= 0 and self.height <= 0:
+                pass
+            else:
+                if self.width > 0 and self.height > 0:
+                    pass
+                elif self.width > 0:
+                    self.height = self.width * frame.shape[0] // frame.shape[1]
+                elif self.height > 0:
+                    self.width = self.height * frame.shape[1] // frame.shape[0]
+                frame = cv2.resize(frame, (self.width, self.height))
+            mask = frame[:, :, 3]
+            frame = frame[:, :, :3]
+            # delay returning frame
+            duration = self.cap.info['duration'] / 1000
+            sleep = self.time + duration - time.time()
+            if sleep > 0:
+                time.sleep(sleep)
+            self.time = time.time()
+            return (True, frame, mask)
+        except EOFError:
+            return (False, None, None)
+
+
+class LayerProvider(Provider):
+
+    def __init__(self, layer, **kwargs):
+        self.layer = layer
+        super().__init__(**kwargs)
+
+    def stop(self):
+        pass
+
+    def reset(self):
+        pass
+
+    def next(self):
+        frame = self.layer.getFrame()
+        mask = self.layer.getMask()
+        ret = self.layer.dorun
+        if frame is not None:
+            if self.width <= 0 and self.height <= 0:
+                pass
+            else:
+                if self.width > 0 and self.height > 0:
+                    pass
+                elif self.width > 0:
+                    self.height = self.width * frame.shape[0] // frame.shape[1]
+                elif self.height > 0:
+                    self.width = self.height * frame.shape[1] // frame.shape[0]
+                frame = cv2.resize(frame, (self.width, self.height))
+            if mask is not None:
+                mask = cv2.resize(mask[0], (frame.shape[1], frame.shape[0])) * 255
+        return (ret, frame, mask)
+
+
+class VideoProvider(Provider):
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.cap = None
+        self.time = 0
+        if 'path' in kwargs:
+            self.path = kwargs['path']
+
+    def loadVideo(self, path):
+        self.path = path
+        self.reset()
+
+    def stop(self):
+        if self.cap is not None:
+            self.cap.release()
+
+    def reset(self):
+        self.stop()
+        self.cap = cv2.VideoCapture(self.path)
+
+        # TODO: this feature is broken as opencv is unable to open video/gif WITH alpha channel contrary to their statement
+        # if this is fixed, GIFProvider is deprecated as this would support alpha channel
+        convert = self.cap.get(cv2.CAP_PROP_CONVERT_RGB)
+        if convert == 1.0:
+            logging.debug(self.cap.get(cv2.CAP_PROP_CONVERT_RGB))
+            logging.debug(self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0.0))
+            logging.debug(self.cap.get(cv2.CAP_PROP_CONVERT_RGB))
+
+        self.frametime = 1 / self.cap.get(cv2.CAP_PROP_FPS)
+        if self.width <= 0 and self.width <= 0:
+            self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        else:
+            if self.width > 0 and self.height > 0:
+                pass
+            elif self.width > 0:
+                self.height = int(self.width * self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) // self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            elif self.height > 0:
+                self.width = int(self.height * self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) // self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        logging.debug("reload {}, fps: {}".format(self.path, self.cap.get(cv2.CAP_PROP_FPS)))
+
+    def next(self):
+        mask = None
+        ret, frame = self.cap.read()
+        if ret == True:
+            if self.width <= 0 and self.height <= 0:
+                pass
+            else:
+                if self.width > 0 and self.height > 0:
+                    pass
+                elif self.width > 0:
+                    self.height = self.width * frame.shape[0] // frame.shape[1]
+                elif self.height > 0:
+                    self.width = self.height * frame.shape[1] // frame.shape[0]
+                frame = cv2.resize(frame, (self.width, self.height))
+            if frame.shape[2] == 4:
+                mask = frame[:, :, 3]
+                frame = frame[:, :, :3]
+
+            # delay returning frame
+            sleep = self.time + self.frametime - time.time()
+            if sleep > 0:
+                time.sleep(sleep)
+            self.time = time.time()
+        return (ret, frame, mask)
+
+
 class CameraProvider(Provider):
 
     def __init__(self, **kwargs):
@@ -142,6 +341,124 @@ class DesktopProvider(Provider):
                 self.width = self.height * frame.shape[1] // frame.shape[0]
             frame = cv2.resize(frame, (self.width, self.height))
         return (True, frame, None)
+
+
+class TextProvider(Provider):
+
+    def __init__(self, text="empty", **kwargs):
+        self.dx = 0
+        kwargs['text'] = text
+        kwargs.setdefault('size', 3)
+        kwargs.setdefault('thickness', 3)
+        kwargs.setdefault('fgcolor', (0, 255, 0))
+        kwargs.setdefault('bgcolor', None)
+        super().__init__(**kwargs)
+
+    def setParams(self, kwargs):
+        super().setParams(kwargs)
+        if 'text' in kwargs:
+            self.text = kwargs['text']
+        if 'size' in kwargs:
+            self.size = kwargs['size']
+        if 'thickness' in kwargs:
+            self.thickness = kwargs['thickness']
+        if 'fgcolor' in kwargs:
+            self.fgcolor = kwargs['fgcolor']
+        if 'bgcolor' in kwargs:
+            self.bgcolor = kwargs['bgcolor']
+
+    def stop(self):
+        pass
+
+    def reset(self):
+        self.stop()
+        (width, height), baseline = cv2.getTextSize(self.text, cv2.FONT_HERSHEY_SIMPLEX, self.size, self.thickness)
+        if self.bgcolor is not None:
+            pad = baseline // 4
+            self.frame = np.zeros((height + baseline + pad*2, width + pad*2, 3), np.uint8)
+            self.frame[:,:] = self.bgcolor
+            cv2.putText(self.frame, self.text, (pad, height - 1 + pad), cv2.FONT_HERSHEY_SIMPLEX, self.size, self.fgcolor, self.thickness)
+            self.mask = None
+        else:
+            self.frame = np.zeros((height + baseline, width, 3), np.uint8)
+            cv2.putText(self.frame, self.text, (0, height - 1), cv2.FONT_HERSHEY_SIMPLEX, self.size, self.fgcolor, self.thickness)
+            self.mask = np.zeros((height + baseline, width, 1), np.uint8)
+            cv2.putText(self.mask, self.text, (0, height - 1), cv2.FONT_HERSHEY_SIMPLEX, self.size, (255), self.thickness)
+
+    def next(self):
+        frame, mask = self.frame, self.mask
+        if self.width <= 0 and self.height <= 0:
+            pass
+        else:
+            if self.width > 0 and self.height > 0:
+                pass
+            elif self.width > 0:
+                self.height = self.width * frame.shape[0] // frame.shape[1]
+            elif self.height > 0:
+                self.width = self.height * frame.shape[1] // frame.shape[0]
+            frame = cv2.resize(frame, (self.width, self.height))
+            if mask is not None:
+                mask = cv2.resize(mask, (self.width, self.height))
+        return (True, frame, mask)
+
+
+class CommandlineProvider(TextProvider):
+
+    def __init__(self, clicommand=['date', '+%T'], frequency=1.0, **kwargs):
+        self.t = 0
+        kwargs['clicommand'] = clicommand
+        kwargs['frequency'] = frequency
+        super().__init__(**kwargs)
+
+    def setParams(self, kwargs):
+        super().setParams(kwargs)
+        if 'clicommand' in kwargs:
+            self.clicommand = kwargs.pop('clicommand', None)
+        if 'frequency' in kwargs:
+            self.frequency = kwargs.pop('frequency', None)
+
+    def next(self):
+        t = time.time()
+        if t - self.t > self.frequency:
+            output = subprocess.check_output(self.clicommand).decode("utf-8").replace('\n', '')
+            self.setParams({'text': output})
+            self.reset()
+            self.t = t
+        return super().next()
+
+
+class Frequency(Provider):
+
+    def __init__(self, fps, provider, **kwargs):
+        self.time = 0
+        kwargs['provider'] = provider
+        kwargs['fps'] = fps
+        super().__init__(**kwargs)
+
+    def setParams(self, kwargs):
+        super().setParams(kwargs)
+        self.provider.setParams(kwargs)
+        if 'fps' in kwargs:
+            self.frametime = 1 / kwargs['fps']
+            if kwargs['fps'] <= 0:
+                self.frametime = 0
+            else:
+                self.frametime = 1 / kwargs['fps']
+
+    def stop(self):
+        self.provider.stop()
+
+    def reset(self):
+        self.provider.reset()
+
+    def next(self):
+        ret, frame, mask = self.provider.next()
+        # delay returning frame
+        sleep = self.time + self.frametime - time.time()
+        if sleep > 0:
+            time.sleep(sleep)
+        self.time = time.time()
+        return (ret, frame, mask)
 
 
 class Looper(Provider):
@@ -386,107 +703,21 @@ class BodypixProvider(Provider):
         return mask
 
 
-class TextProvider(Provider):
+class Filter(Provider):
 
-    def __init__(self, text="empty", **kwargs):
-        self.dx = 0
-        kwargs['text'] = text
-        kwargs.setdefault('size', 3)
-        kwargs.setdefault('thickness', 3)
-        kwargs.setdefault('fgcolor', (0, 255, 0))
-        kwargs.setdefault('bgcolor', None)
-        super().__init__(**kwargs)
+    __metaclass__ = abc.ABCMeta
 
-    def setParams(self, kwargs):
-        super().setParams(kwargs)
-        if 'text' in kwargs:
-            self.text = kwargs['text']
-        if 'size' in kwargs:
-            self.size = kwargs['size']
-        if 'thickness' in kwargs:
-            self.thickness = kwargs['thickness']
-        if 'fgcolor' in kwargs:
-            self.fgcolor = kwargs['fgcolor']
-        if 'bgcolor' in kwargs:
-            self.bgcolor = kwargs['bgcolor']
-
-    def stop(self):
-        pass
-
-    def reset(self):
-        self.stop()
-        (width, height), baseline = cv2.getTextSize(self.text, cv2.FONT_HERSHEY_SIMPLEX, self.size, self.thickness)
-        if self.bgcolor is not None:
-            pad = baseline // 4
-            self.frame = np.zeros((height + baseline + pad*2, width + pad*2, 3), np.uint8)
-            self.frame[:,:] = self.bgcolor
-            cv2.putText(self.frame, self.text, (pad, height - 1 + pad), cv2.FONT_HERSHEY_SIMPLEX, self.size, self.fgcolor, self.thickness)
-            self.mask = None
-        else:
-            self.frame = np.zeros((height + baseline, width, 3), np.uint8)
-            cv2.putText(self.frame, self.text, (0, height - 1), cv2.FONT_HERSHEY_SIMPLEX, self.size, self.fgcolor, self.thickness)
-            self.mask = np.zeros((height + baseline, width, 1), np.uint8)
-            cv2.putText(self.mask, self.text, (0, height - 1), cv2.FONT_HERSHEY_SIMPLEX, self.size, (255), self.thickness)
-
-    def next(self):
-        frame, mask = self.frame, self.mask
-        if self.width <= 0 and self.height <= 0:
-            pass
-        else:
-            if self.width > 0 and self.height > 0:
-                pass
-            elif self.width > 0:
-                self.height = self.width * frame.shape[0] // frame.shape[1]
-            elif self.height > 0:
-                self.width = self.height * frame.shape[1] // frame.shape[0]
-            frame = cv2.resize(frame, (self.width, self.height))
-            if mask is not None:
-                mask = cv2.resize(mask, (self.width, self.height))
-        return (True, frame, mask)
-
-
-class CommandlineProvider(TextProvider):
-
-    def __init__(self, clicommand=['date', '+%T'], frequency=1.0, **kwargs):
-        self.t = 0
-        kwargs['clicommand'] = clicommand
-        kwargs['frequency'] = frequency
-        super().__init__(**kwargs)
-
-    def setParams(self, kwargs):
-        super().setParams(kwargs)
-        if 'clicommand' in kwargs:
-            self.clicommand = kwargs.pop('clicommand', None)
-        if 'frequency' in kwargs:
-            self.frequency = kwargs.pop('frequency', None)
-
-    def next(self):
-        t = time.time()
-        if t - self.t > self.frequency:
-            output = subprocess.check_output(self.clicommand).decode("utf-8").replace('\n', '')
-            self.setParams({'text': output})
-            self.reset()
-            self.t = t
-        return super().next()
-
-
-class Frequency(Provider):
-
-    def __init__(self, fps, provider, **kwargs):
-        self.time = 0
+    def __init__(self, key, provider, **kwargs):
+        self.triggercount = 0
+        kwargs['key'] = key
         kwargs['provider'] = provider
-        kwargs['fps'] = fps
         super().__init__(**kwargs)
 
     def setParams(self, kwargs):
         super().setParams(kwargs)
+        if 'key' in kwargs:
+            self.key = kwargs.pop('key', ord(' '))
         self.provider.setParams(kwargs)
-        if 'fps' in kwargs:
-            self.frametime = 1 / kwargs['fps']
-            if kwargs['fps'] <= 0:
-                self.frametime = 0
-            else:
-                self.frametime = 1 / kwargs['fps']
 
     def stop(self):
         self.provider.stop()
@@ -496,208 +727,69 @@ class Frequency(Provider):
 
     def next(self):
         ret, frame, mask = self.provider.next()
-        # delay returning frame
-        sleep = self.time + self.frametime - time.time()
-        if sleep > 0:
-            time.sleep(sleep)
-        self.time = time.time()
-        return (ret, frame, mask)
-
-
-class GIFProvider(Provider):
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.cap = None
-        self.time = 0
-        if 'path' in kwargs:
-            self.path = kwargs['path']
-
-    def loadVideo(self, path):
-        self.path = path
-        self.reset()
-
-    def stop(self):
-        pass
-
-    def reset(self):
-        self.stop()
-        self.cap = Image.open(self.path)
-        logging.debug("reload {}".format(self.path))
-        if self.width <= 0 and self.width <= 0:
-            self.width, self.height = self.cap.size
-        else:
-            if self.width > 0 and self.height > 0:
-                pass
-            elif self.width > 0:
-                self.height = self.width * self.cap.size[1] // self.cap.size[0]
-            elif self.height > 0:
-                self.width = self.height * self.cap.size[0] // self.cap.size[1]
-
-    def next(self):
-        try:
-            self.cap.seek(self.cap.tell()+1)
-            #frame = self.cap.convert('RGB')
-            frame = np.array(self.cap.convert('RGBA'), dtype=np.uint8)
-            frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2BGRA)
-            if self.width <= 0 and self.height <= 0:
-                pass
-            else:
-                if self.width > 0 and self.height > 0:
-                    pass
-                elif self.width > 0:
-                    self.height = self.width * frame.shape[0] // frame.shape[1]
-                elif self.height > 0:
-                    self.width = self.height * frame.shape[1] // frame.shape[0]
-                frame = cv2.resize(frame, (self.width, self.height))
-            mask = frame[:, :, 3]
-            frame = frame[:, :, :3]
-            # delay returning frame
-            duration = self.cap.info['duration'] / 1000
-            sleep = self.time + duration - time.time()
-            if sleep > 0:
-                time.sleep(sleep)
-            self.time = time.time()
-            return (True, frame, mask)
-        except EOFError:
-            return (False, None, None)
-
-
-class ImageProvider(Provider):
-
-    def __init__(self, path, **kwargs):
-        self.frame = None
-        self.mask = None
-        kwargs['path'] = path
-        super().__init__(**kwargs)
-
-    def setParams(self, kwargs):
-        super().setParams(kwargs)
-        if 'path' in kwargs:
-            self.path = kwargs['path']
-
-    def stop(self):
-        pass
-
-    def reset(self):
-        self.stop()
-        self.frame = cv2.imread(self.path, cv2.IMREAD_UNCHANGED)
-        if self.frame.shape[2] == 4:
-            self.mask = self.frame[:, :, 3]
-            self.frame = self.frame[:, :, :3]
-
-    def next(self):
-        frame, mask = self.frame, self.mask
-        if self.width <= 0 and self.height <= 0:
-            pass
-        else:
-            if self.width > 0 and self.height > 0:
-                pass
-            elif self.width > 0:
-                self.height = self.width * frame.shape[0] // frame.shape[1]
-            elif self.height > 0:
-                self.width = self.height * frame.shape[1] // frame.shape[0]
-            frame = cv2.resize(frame, (self.width, self.height))
-            if mask is not None:
-                mask = cv2.resize(mask, (self.width, self.height))
-        return (True, frame, mask)
-
-
-class LayerProvider(Provider):
-
-    def __init__(self, layer, **kwargs):
-        self.layer = layer
-        super().__init__(**kwargs)
-
-    def stop(self):
-        pass
-
-    def reset(self):
-        pass
-
-    def next(self):
-        frame = self.layer.getFrame()
-        mask = self.layer.getMask()
-        ret = self.layer.dorun
         if frame is not None:
-            if self.width <= 0 and self.height <= 0:
-                pass
-            else:
-                if self.width > 0 and self.height > 0:
-                    pass
-                elif self.width > 0:
-                    self.height = self.width * frame.shape[0] // frame.shape[1]
-                elif self.height > 0:
-                    self.width = self.height * frame.shape[1] // frame.shape[0]
-                frame = cv2.resize(frame, (self.width, self.height))
-            if mask is not None:
-                mask = cv2.resize(mask[0], (frame.shape[1], frame.shape[0])) * 255
+            frame, mask = self.applyFilter(frame, mask)
         return (ret, frame, mask)
 
+    @abc.abstractmethod
+    def applyFilter(self, frame, mask):
+        pass
 
-class VideoProvider(Provider):
+    def command(self, **kwargs):
+        if kwargs.get('keypress', -1) == self.key:
+            kwargs.pop('keypress', None)
+            self.triggercount += 1
+            return True
+        return super().command(**kwargs)
 
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.cap = None
-        self.time = 0
-        if 'path' in kwargs:
-            self.path = kwargs['path']
 
-    def loadVideo(self, path):
-        self.path = path
-        self.reset()
+class SmoothingFilter(Filter):
 
-    def stop(self):
-        if self.cap is not None:
-            self.cap.release()
+    def applyFilter(self, frame, mask):
+        if self.triggercount % 2 == 1:
+            frame = cv2.bilateralFilter(frame,9,75,75)
+        return (frame, mask)
 
-    def reset(self):
-        self.stop()
-        self.cap = cv2.VideoCapture(self.path)
 
-        # TODO: this feature is broken as opencv is unable to open video/gif WITH alpha channel contrary to their statement
-        # if this is fixed, GIFProvider is deprecated as this would support alpha channel
-        convert = self.cap.get(cv2.CAP_PROP_CONVERT_RGB)
-        if convert == 1.0:
-            logging.debug(self.cap.get(cv2.CAP_PROP_CONVERT_RGB))
-            logging.debug(self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0.0))
-            logging.debug(self.cap.get(cv2.CAP_PROP_CONVERT_RGB))
+class InvertFilter(Filter):
 
-        self.frametime = 1 / self.cap.get(cv2.CAP_PROP_FPS)
-        if self.width <= 0 and self.width <= 0:
-            self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-            self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        else:
-            if self.width > 0 and self.height > 0:
-                pass
-            elif self.width > 0:
-                self.height = int(self.width * self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) // self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-            elif self.height > 0:
-                self.width = int(self.height * self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) // self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        logging.debug("reload {}, fps: {}".format(self.path, self.cap.get(cv2.CAP_PROP_FPS)))
+    def applyFilter(self, frame, mask):
+        if self.triggercount % 2 == 1:
+            frame = cv2.bitwise_not(frame)
+        return (frame, mask)
 
-    def next(self):
-        mask = None
-        ret, frame = self.cap.read()
-        if ret == True:
-            if self.width <= 0 and self.height <= 0:
-                pass
-            else:
-                if self.width > 0 and self.height > 0:
-                    pass
-                elif self.width > 0:
-                    self.height = self.width * frame.shape[0] // frame.shape[1]
-                elif self.height > 0:
-                    self.width = self.height * frame.shape[1] // frame.shape[0]
-                frame = cv2.resize(frame, (self.width, self.height))
-            if frame.shape[2] == 4:
-                mask = frame[:, :, 3]
-                frame = frame[:, :, :3]
 
-            # delay returning frame
-            sleep = self.time + self.frametime - time.time()
-            if sleep > 0:
-                time.sleep(sleep)
-            self.time = time.time()
-        return (ret, frame, mask)
+class HologramFilter(Filter):
+
+    def shift_image(self, img, dx, dy):
+        img = np.roll(img, dy, axis=0)
+        img = np.roll(img, dx, axis=1)
+        if dy > 0:
+            img[:dy, :] = 0
+        elif dy < 0:
+            img[dy:, :] = 0
+        if dx > 0:
+            img[:, :dx] = 0
+        elif dx < 0:
+            img[:, dx:] = 0
+        return img
+
+    def hologram_effect(self, img):
+        # add a blue tint
+        holo = cv2.applyColorMap(img, cv2.COLORMAP_WINTER)
+        # add a halftone effect
+        bandLength, bandGap = 2, 3
+        for y in range(holo.shape[0]):
+            if y % (bandLength+bandGap) < bandLength:
+                holo[y,:,:] = holo[y,:,:] * np.random.uniform(0.1, 0.3)
+        # add some ghosting
+        holo_blur = cv2.addWeighted(holo, 0.2, self.shift_image(holo.copy(), 5, 5), 0.8, 0)
+        holo_blur = cv2.addWeighted(holo_blur, 0.4, self.shift_image(holo.copy(), -5, -5), 0.6, 0)
+        # combine with the original color, oversaturated
+        out = cv2.addWeighted(img, 0.5, holo_blur, 0.6, 0)
+        return out
+
+    def applyFilter(self, frame, mask):
+        if self.triggercount % 2 == 1:
+            frame = self.hologram_effect(frame)
+        return (frame, mask)
