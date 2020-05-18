@@ -258,7 +258,7 @@ class HorizontalShift(Provider):
 
     def next(self):
         ret, frame, mask = self.provider.next()
-        if self.width <= 0 and self.height <= 0:
+        if frame is None or (self.width <= 0 and self.height <= 0):
             pass
         else:
             if self.width > 0 and self.height > 0:
@@ -310,8 +310,9 @@ class HorizontalShift(Provider):
                 if mask is not None:
                     rmask[:, d1:d2] = mask[:, :(d2-d1)]
                     rmask[:, d3:d4] = mask[:, (d2-d1):]
-                res = res[:, :-pad, :]
-                rmask = rmask[:, :-pad]
+                if pad > 0:
+                    res = res[:, :-pad, :]
+                    rmask = rmask[:, :-pad]
 
             self.dx += self.speed
             frame = res
@@ -647,8 +648,8 @@ class VideoProvider(Provider):
 
         self.frametime = 1 / self.cap.get(cv2.CAP_PROP_FPS)
         if self.width <= 0 and self.width <= 0:
-            self.height = self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT)
-            self.width = self.cap.get(cv2.CAP_PROP_FRAME_WIDTH)
+            self.height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            self.width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         else:
             if self.width > 0 and self.height > 0:
                 pass
