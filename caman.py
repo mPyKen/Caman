@@ -145,7 +145,8 @@ class Caman():
         elif event == cv2.EVENT_MBUTTONUP:
             self.mousemode[1] = "up"
             layer = self.findLayerAt(x, y)
-            layer.level = -layer.level
+            if layer is not None:
+                layer.level = -layer.level
         elif event == cv2.EVENT_RBUTTONUP:
             self.mousemode[2] = "up"
         elif event == cv2.EVENT_MOUSEMOVE:
@@ -191,17 +192,18 @@ class Caman():
                 elif self.grabbedeffect == 4:
                     tl = (tl[0] + dx, tl[1] + dy)
                     br = (br[0] + dx, br[1] + dy)
+                layer = self.grabbedlayer
                 if br[0] - tl[0] <= 0 or br[1] - tl[1] <= 0:
-                    self.grabbedlayer.level = -self.grabbedlayer.level
+                    layer.level = -layer.level
                     self.grabbedlayer = None
                 else:
-                    self.grabbedlayer.posx = tl[0]
-                    self.grabbedlayer.posy = tl[1]
-                    self.grabbedlayer.width = br[0] - tl[0]
-                    self.grabbedlayer.height = br[1] - tl[1]
-                    self.grabbedlayer.updateDimension()
-                if isinstance(self.grabbedlayer, AnimatedLayer):
-                    self.grabbedlayer.resume()
+                    layer.posx = tl[0]
+                    layer.posy = tl[1]
+                    layer.width = br[0] - tl[0]
+                    layer.height = br[1] - tl[1]
+                    layer.updateDimension()
+                if isinstance(layer, AnimatedLayer):
+                    layer.resume()
 
     def renderAdditionalInfo(self, render, fps):
         cv2.putText(render, "FPS: {}".format(format(fps, '.2f')), (15, 40), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0))
