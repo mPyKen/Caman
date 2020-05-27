@@ -485,6 +485,52 @@ class Looper(Provider):
         return (ret, frame, mask)
 
 
+class OnPress(Provider):
+
+    def __init__(self, key, provider, **kwargs):
+        self.lasttriggercount = 0
+        self.triggercount = 0
+        kwargs['key'] = key
+        kwargs['provider'] = provider
+        super().__init__(**kwargs)
+
+    def setParams(self, kwargs):
+        super().setParams(kwargs)
+        if 'key' in kwargs:
+            self.key = kwargs.pop('key', ord(' '))
+        self.provider.setParams(kwargs)
+
+    def stop(self):
+        self.provider.stop()
+
+    def reset(self):
+        self.provider.reset()
+
+    def next(self):
+        frame, mask = (None, None)
+        if self.triggercount > self.lasttriggercount:
+            if self.lasttriggercount > 0:
+                self.triggercount = 0
+                self.lasttriggercount = 0
+            self.provider.reset()
+            self.lasttriggercount = self.triggercount
+        if self.triggercount > 0:
+            ret, frame, mask = self.provider.next()
+            if ret == False:
+                self.triggercount = 0
+                self.lasttriggercount = 0
+        else:
+            time.sleep(0.033)
+        return (True, frame, mask)
+
+    def command(self, **kwargs):
+        if kwargs.get('keypress', -1) == self.key:
+            kwargs.pop('keypress', None)
+            self.triggercount += 1
+            return True
+        return super().command(**kwargs)
+
+
 class Boomerang(Provider):
 
     class Status(Enum):
